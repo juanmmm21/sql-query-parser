@@ -41,6 +41,8 @@ class TokenType(Enum):
     INTEGER = auto()
     FLOAT = auto()
     STRING = auto()
+    BOOLEAN = auto()
+    NULL = auto()
     EQ = auto()
     NEQ = auto()
     LT = auto()
@@ -60,7 +62,7 @@ class TokenType(Enum):
     EOF = auto()
 
 
-TokenValue = int | float | str | None
+TokenValue = int | float | str | bool | None
 
 
 @dataclass(frozen=True, slots=True)

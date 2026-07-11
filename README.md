@@ -101,7 +101,8 @@ comparison      := additive [ [NOT] LIKE additive
 additive        := multiplicative { ('+' | '-') multiplicative }
 multiplicative  := unary { ('*' | '/' | '%') unary }
 unary           := ('-' | '+') unary | primary
-primary         := literal | column_ref | function_call | '*' | '(' expr ')'
+primary         := literal | column_ref | function_call | placeholder | '*' | '(' expr ')'
+placeholder     := '?'   -- positional query parameter, indexed per statement in order of appearance
 column_ref      := identifier ['.' identifier]
 function_call   := identifier '(' ( '*' | [DISTINCT] [expr {',' expr}] ) ')'
 literal         := INTEGER | FLOAT | STRING | TRUE | FALSE | NULL
@@ -211,7 +212,7 @@ tokens = tokenize("SELECT * FROM t")  # list[Token], for tooling (syntax highlig
 The public contract of this module is the `Statement` hierarchy in `models.py` — not a serialization format, since the AST is meant to be consumed in-process, not persisted or sent over a wire. Everything downstream (`cost-based-query-optimizer`, and ultimately `nanosql`) is expected to `match`/`isinstance`-dispatch over these node types:
 
 - **Statements**: `SelectStatement`, `InsertStatement`, `UpdateStatement`, `DeleteStatement`, `CreateTableStatement`, `CreateIndexStatement` (all inherit the marker base `Statement`).
-- **Expressions**: `Literal`, `ColumnRef`, `Star`, `BinaryOp`, `UnaryOp`, `Between`, `InList`, `Like`, `IsNull`, `FunctionCall` (all inherit the marker base `Expression`).
+- **Expressions**: `Literal`, `ColumnRef`, `Star`, `Placeholder` (positional `?` parameter carrying its 0-based per-statement index), `BinaryOp`, `UnaryOp`, `Between`, `InList`, `Like`, `IsNull`, `FunctionCall` (all inherit the marker base `Expression`).
 - **Shared fragments**: `SelectItem`, `TableRef`, `Join`, `OrderByItem`, `Assignment`, `DataType`, `ColumnDefinition`.
 
 Every node is `@dataclass(frozen=True, slots=True)`: structurally comparable with `==` (which the property-based tests rely on directly), hashable-by-value where all fields are hashable, and impossible to mutate in place — a consumer that wants a modified plan builds a new node, it never patches this one. This module deliberately does not import or depend on anything from `cost-based-query-optimizer`; the coupling is one-directional and exists only as "the shape of the dataclasses both sides agree on," wired together for real only inside `nanosql`.

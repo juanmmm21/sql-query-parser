@@ -59,6 +59,7 @@ class TokenType(Enum):
     LPAREN = auto()
     RPAREN = auto()
     SEMICOLON = auto()
+    PLACEHOLDER = auto()
     EOF = auto()
 
 
@@ -112,6 +113,20 @@ class ColumnRef(Expression):
 
     name: str
     table: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Placeholder(Expression):
+    """Parámetro posicional `?` de una consulta preparada.
+
+    `index` es la posición del placeholder dentro de su sentencia (base 0,
+    en orden de aparición): es lo que permite a un driver (nanosql) ligar
+    la tupla de parámetros estilo DB-API `qmark` sin re-tokenizar el SQL.
+    El parser no liga valores — un `Placeholder` que llegue a evaluarse sin
+    sustituir es un error del consumidor, no de este módulo.
+    """
+
+    index: int
 
 
 @dataclass(frozen=True, slots=True)

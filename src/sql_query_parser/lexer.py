@@ -115,6 +115,7 @@ _SINGLE_CHAR_TOKENS: dict[str, TokenType] = {
     "(": TokenType.LPAREN,
     ")": TokenType.RPAREN,
     ";": TokenType.SEMICOLON,
+    "?": TokenType.PLACEHOLDER,
 }
 
 

@@ -39,6 +39,7 @@ from .models import (
     LiteralType,
     OrderByItem,
     OrderDirection,
+    Placeholder,
     SelectItem,
     SelectStatement,
     Star,
@@ -72,6 +73,7 @@ class Parser:
             raise ValueError("token stream must end with an EOF token")
         self._tokens = tokens
         self._pos = 0
+        self._placeholder_count = 0
 
     # -- utilidades de flujo de tokens --------------------------------------
 
@@ -246,6 +248,11 @@ class Parser:
         if token.type is TokenType.STAR:
             self._advance()
             return Star()
+        if token.type is TokenType.PLACEHOLDER:
+            self._advance()
+            index = self._placeholder_count
+            self._placeholder_count += 1
+            return Placeholder(index=index)
         if token.type is TokenType.LPAREN:
             self._advance()
             if self._check_keyword("SELECT"):
@@ -291,6 +298,10 @@ class Parser:
     # -- entrada de nivel superior -------------------------------------------
 
     def parse_statement(self) -> Statement:
+        # Los índices de placeholder son por sentencia: en un programa de
+        # varias sentencias (`parse_many`), cada una liga sus parámetros
+        # desde 0, igual que las ejecutaría un driver una a una.
+        self._placeholder_count = 0
         if self._check_keyword("SELECT"):
             return self._parse_select()
         if self._check_keyword("INSERT"):

@@ -36,7 +36,7 @@ This module sits at the head of the query-engine branch of the pipeline and has 
 - Hand-written lexical analysis: single-pass tokenization with exact line/column tracking, string and quoted-identifier escaping, numeric literal grammars (integers, decimals, exponents), and line/block comment handling — no regex-soup tokenizer.
 - Recursive-descent parsing with explicit operator-precedence climbing (`OR → AND → NOT → comparison → additive → multiplicative → unary → primary`), including the non-obvious rule that SQL comparisons do not chain (`a = b = c` is a syntax error, not a boolean expression).
 - A typed AST as a first-class deliverable: every node is a `frozen`, `slots`-based dataclass, so downstream consumers get structural equality, immutability, and `mypy --strict` guarantees for free.
-- Deliberate, documented scope control: recognizing a construct is out of scope (a subquery) and rejecting it with a specific, actionable error is treated as a first-class requirement, not an afterthought.
+- Deliberate, documented scope control: recognizing a construct is out of scope (a derived table in `FROM`) and rejecting it with a specific, actionable error is treated as a first-class requirement, not an afterthought.
 - Property-based testing against an independent reference model: a seeded random query generator that builds the expected AST *and* the SQL text through two separate code paths, then asserts the parser reproduces the generator's tree exactly — for hundreds of random inputs, not a handful of hand-picked ones.
 
 ## How it works
@@ -94,15 +94,18 @@ or_expr         := and_expr { OR and_expr }
 and_expr        := not_expr { AND not_expr }
 not_expr        := NOT not_expr | comparison
 comparison      := additive [ [NOT] LIKE additive
-                             | [NOT] IN '(' expr {',' expr} ')'
+                             | [NOT] IN '(' ( select_stmt | expr {',' expr} ) ')'
                              | [NOT] BETWEEN additive AND additive
                              | IS [NOT] NULL
                              | ('=' | '<>' | '!=' | '<' | '<=' | '>' | '>=') additive ]
 additive        := multiplicative { ('+' | '-') multiplicative }
 multiplicative  := unary { ('*' | '/' | '%') unary }
 unary           := ('-' | '+') unary | primary
-primary         := literal | column_ref | function_call | placeholder | '*' | '(' expr ')'
-placeholder     := '?'   -- positional query parameter, indexed per statement in order of appearance
+primary         := literal | column_ref | function_call | placeholder | '*'
+                  | '(' select_stmt ')'   -- scalar subquery (Subquery AST node)
+                  | '(' expr ')'
+placeholder     := '?'   -- positional query parameter, indexed per statement in order of appearance;
+                         -- placeholders inside a subquery continue the outer statement's numbering
 column_ref      := identifier ['.' identifier]
 function_call   := identifier '(' ( '*' | [DISTINCT] [expr {',' expr}] ) ')'
 literal         := INTEGER | FLOAT | STRING | TRUE | FALSE | NULL
@@ -114,6 +117,7 @@ Notes worth calling out explicitly:
 - **Identifiers** may be unquoted (`[A-Za-z_][A-Za-z0-9_]*`, case-insensitive for keyword matching, case *preserved* in the AST) or double-quoted with `""` as the escape for an embedded `"` (`"a""b"` → `a"b`), letting a quoted identifier collide textually with a reserved word.
 - **Comments**: `-- line comments` and `/* block comments */` (non-nesting) are recognized by the lexer and never reach the parser.
 - **`INSERT` without an explicit column list** (`INSERT INTO t VALUES (...)`) is supported; `InsertStatement.columns` is an empty tuple in that case, meaning "all columns, in table-definition order" — resolving that order is `nanosql`'s job, not this parser's.
+- **Subqueries are expressions, not table sources.** `(SELECT ...)` as a primary expression produces a `Subquery` node (a scalar subquery), and `x [NOT] IN (SELECT ...)` produces a dedicated `InSubquery` node — deliberately distinct from `InList`, because `x IN ((SELECT ...))` (a one-element list whose element is a *scalar* subquery, at most one row) does not mean the same thing as `x IN (SELECT ...)` (membership in a result of any size). The parser imposes no semantic restrictions on subqueries: single-column projection, single-row scalar results and the no-correlation rule are all checked by the consumer (`nanosql`), which is the first layer with catalog access. Subqueries share the parser instance with their outer statement, so `?` placeholders inside them continue the outer statement's per-statement numbering.
 
 ### Explicitly excluded constructs
 
@@ -121,7 +125,8 @@ These are recognized as *known gaps*, not silently mis-parsed. Some fail with a 
 
 | Construct | Example | Behavior |
 |---|---|---|
-| Subqueries (anywhere: `WHERE x IN (...)`, scalar, `FROM`) | `SELECT * FROM t WHERE id IN (SELECT id FROM u)` | `UnsupportedFeatureError`, points at the nested `SELECT` |
+| Derived tables (subqueries in `FROM`) | `SELECT * FROM (SELECT id FROM u) d` | `UnsupportedFeatureError`, points at the opening `(` |
+| `EXISTS (SELECT ...)` | `SELECT * FROM t WHERE EXISTS (SELECT 1 FROM u)` | `SqlSyntaxError` (`EXISTS` is not a primary expression) |
 | `UNION` / `INTERSECT` / `EXCEPT` | `SELECT a FROM t UNION SELECT b FROM u` | `SqlSyntaxError` (not part of `select_stmt`) |
 | Common table expressions (`WITH`) | `WITH cte AS (...) SELECT * FROM cte` | `SqlSyntaxError` |
 | `CASE WHEN ... THEN ... END` | `SELECT CASE WHEN a=1 THEN 'x' END FROM t` | `SqlSyntaxError` |
@@ -212,7 +217,7 @@ tokens = tokenize("SELECT * FROM t")  # list[Token], for tooling (syntax highlig
 The public contract of this module is the `Statement` hierarchy in `models.py` — not a serialization format, since the AST is meant to be consumed in-process, not persisted or sent over a wire. Everything downstream (`cost-based-query-optimizer`, and ultimately `nanosql`) is expected to `match`/`isinstance`-dispatch over these node types:
 
 - **Statements**: `SelectStatement`, `InsertStatement`, `UpdateStatement`, `DeleteStatement`, `CreateTableStatement`, `CreateIndexStatement` (all inherit the marker base `Statement`).
-- **Expressions**: `Literal`, `ColumnRef`, `Star`, `Placeholder` (positional `?` parameter carrying its 0-based per-statement index), `BinaryOp`, `UnaryOp`, `Between`, `InList`, `Like`, `IsNull`, `FunctionCall` (all inherit the marker base `Expression`).
+- **Expressions**: `Literal`, `ColumnRef`, `Star`, `Placeholder` (positional `?` parameter carrying its 0-based per-statement index), `BinaryOp`, `UnaryOp`, `Between`, `InList`, `Like`, `IsNull`, `FunctionCall`, `Subquery` (a scalar `(SELECT ...)` wrapping a full `SelectStatement`), `InSubquery` (`expr [NOT] IN (SELECT ...)`) — all inherit the marker base `Expression`.
 - **Shared fragments**: `SelectItem`, `TableRef`, `Join`, `OrderByItem`, `Assignment`, `DataType`, `ColumnDefinition`.
 
 Every node is `@dataclass(frozen=True, slots=True)`: structurally comparable with `==` (which the property-based tests rely on directly), hashable-by-value where all fields are hashable, and impossible to mutate in place — a consumer that wants a modified plan builds a new node, it never patches this one. This module deliberately does not import or depend on anything from `cost-based-query-optimizer`; the coupling is one-directional and exists only as "the shape of the dataclasses both sides agree on," wired together for real only inside `nanosql`.
@@ -227,11 +232,13 @@ ruff format --check .
 mypy --strict src/
 ```
 
-133 tests across five files:
+155 tests across eight files:
 
 - `test_lexer.py` (43): identifiers, keywords, quoted identifiers with escaping, numeric/string/boolean/null literals, every operator, comments, and line/column tracking across multiple lines.
-- `test_parser_select.py` (34): `SELECT` with `DISTINCT`, aliases, all four `JOIN` kinds, `WHERE`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`/`OFFSET`, aggregate function calls, and the explicitly-excluded-construct battery (subqueries, `UNION`, `WITH`, `CASE`).
+- `test_parser_select.py` (34): `SELECT` with `DISTINCT`, aliases, all four `JOIN` kinds, `WHERE`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`/`OFFSET`, aggregate function calls, and the explicitly-excluded-construct battery (derived tables, `UNION`, `WITH`, `CASE`).
+- `test_subqueries.py` (14): scalar subqueries as primary expressions (in `WHERE`, in the select list, inside arithmetic), `[NOT] IN (SELECT ...)` vs `IN ((SELECT ...))` node distinction, subqueries nested in subqueries, placeholder numbering across subquery boundaries, and the syntax-error battery for malformed subqueries.
 - `test_parser_dml.py` (10) / `test_parser_ddl.py` (10): `INSERT`/`UPDATE`/`DELETE` and `CREATE TABLE`/`CREATE INDEX`, including multi-row inserts, column constraints in any order, and parameterized data types (`VARCHAR(255)`, `DECIMAL(10, 2)`).
+- `test_placeholders.py` (8): `?` tokenization (including `?` inside string literals not being a placeholder), per-statement 0-based indexing in order of appearance across every DML statement kind, index reset between the statements of `parse_many`, and rejection of `?` outside expression positions.
 - `test_errors.py` (30): a parametrized battery of invalid queries asserting the **exact** line/column the parser reports (computed by locating the offending substring in the source, not hand-counted — robust to test-text edits), the exception hierarchy, and the `CaretErrorFormatter` output shape.
 - `test_properties.py` (6 pytest cases, driving ~1,800 generated queries): a seeded (`random.Random(seed)`, 6 fixed seeds total) query generator that builds SQL text and its expected AST through two independent code paths — every compound subexpression is explicitly parenthesized during generation specifically so that *arbitrary* random tree shapes (not just hand-picked ones) are safe to compare, without needing to re-derive precedence rules inside the generator itself. Covers all six statement kinds plus boolean expression trees up to depth 5.
 
@@ -245,7 +252,7 @@ Parsing is not the hot path of a database engine the way page I/O or a hash join
 ## Troubleshooting
 
 - **"expected an expression, found '...'"** — the parser hit a token that cannot start a `primary` (see grammar above) where it expected one. The most common cause is a missing operand around a comma or a keyword typo.
-- **`UnsupportedFeatureError` mentioning subqueries** — the query uses a nested `SELECT` in a position this parser recognizes but has deliberately excluded (see the exclusion table above). This is not a bug to report; it's documented scope.
+- **`UnsupportedFeatureError` mentioning derived tables** — the query uses `(SELECT ...)` as a table source in `FROM`/`JOIN`, which this parser recognizes but has deliberately excluded (see the exclusion table above). Subqueries in *expression* positions (scalar, `[NOT] IN`) are supported; only the table-source position is out of scope.
 - **A `NOT` produces "expected LIKE, IN or BETWEEN after NOT"** — `NOT` immediately after a comparison's left-hand side is only legal as `NOT LIKE`/`NOT IN`/`NOT BETWEEN`. A leading `NOT` in front of a whole boolean expression (`WHERE NOT (a = 1)`) is handled separately and does not hit this path.
 - **Column/table names silently accepted even though they don't exist in any schema** — expected: this module performs no semantic/catalog validation. Existence and type checking happen in `cost-based-query-optimizer`, which is the first consumer with access to table metadata.
 - **`mypy --strict` failures after modifying `models.py`** — every AST dataclass is `frozen=True, slots=True`; make sure a new field has a type on every dataclass, and remember dataclass field ordering requires all-defaulted fields after the first defaulted one.

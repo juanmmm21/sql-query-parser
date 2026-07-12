@@ -180,13 +180,13 @@ class TestFunctionCallsInSelect:
 
 
 class TestExplicitlyExcludedConstructs:
-    def test_subquery_in_where_is_rejected(self) -> None:
+    def test_derived_table_in_from_is_rejected(self) -> None:
         with pytest.raises(UnsupportedFeatureError):
-            parse("SELECT * FROM t WHERE a IN (SELECT id FROM other)")
+            parse("SELECT * FROM (SELECT id FROM other) d")
 
-    def test_subquery_as_scalar_expression_is_rejected(self) -> None:
+    def test_derived_table_in_join_is_rejected(self) -> None:
         with pytest.raises(UnsupportedFeatureError):
-            parse("SELECT (SELECT 1) FROM t")
+            parse("SELECT * FROM t JOIN (SELECT id FROM other) d ON t.id = d.id")
 
     def test_union_is_a_syntax_error(self) -> None:
         with pytest.raises(SqlSyntaxError):

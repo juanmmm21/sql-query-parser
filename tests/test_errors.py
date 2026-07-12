@@ -89,11 +89,11 @@ class TestSyntaxErrorPositions:
 
 
 class TestUnsupportedFeatureRejection:
-    def test_subquery_rejection_points_at_select_keyword(self) -> None:
-        source = "SELECT * FROM t WHERE id IN (SELECT id FROM other)"
+    def test_derived_table_rejection_points_at_opening_paren(self) -> None:
+        source = "SELECT * FROM (SELECT id FROM other) d"
         with pytest.raises(UnsupportedFeatureError) as excinfo:
             parse(source)
-        assert excinfo.value.position.column == _column_of(source, "SELECT", occurrence=2)
+        assert excinfo.value.position.column == _column_of(source, "(SELECT")
 
     def test_unsupported_feature_error_is_also_a_syntax_error(self) -> None:
         assert issubclass(UnsupportedFeatureError, SqlSyntaxError)

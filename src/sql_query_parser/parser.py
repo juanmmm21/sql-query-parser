@@ -6,10 +6,15 @@ explican decisiones no obvias:
 - Las comparaciones (`=`, `<>`, `<`, `LIKE`, `IN`, `BETWEEN`, `IS [NOT] NULL`)
   son deliberadamente NO asociativas: `a = b = c` es un error de sintaxis,
   igual que en SQL estándar (no existe encadenamiento de comparaciones).
-- Las subconsultas (`(SELECT ...)` en cualquier posición de expresión) se
-  reconocen y se rechazan explícitamente con `UnsupportedFeatureError` en
-  vez de fallar más abajo en la gramática con un error de sintaxis genérico
-  y confuso.
+- Las subconsultas se aceptan en dos posiciones de EXPRESIÓN: `(SELECT ...)`
+  como primaria (nodo `Subquery`, subconsulta escalar) y `[NOT] IN (SELECT
+  ...)` (nodo `InSubquery`). Comparten instancia de `Parser` con la sentencia
+  externa, así que los `Placeholder` de una subconsulta continúan la
+  numeración por sentencia de su consulta externa — exactamente lo que un
+  driver necesita para ligar la tupla de parámetros completa de una vez.
+- Las subconsultas en `FROM` (tablas derivadas) siguen fuera del subconjunto
+  y se rechazan explícitamente con `UnsupportedFeatureError` en vez de fallar
+  más abajo con un error de sintaxis genérico y confuso.
 """
 
 from typing import NoReturn
@@ -31,6 +36,7 @@ from .models import (
     FunctionCall,
     InList,
     InsertStatement,
+    InSubquery,
     IsNull,
     Join,
     JoinType,
@@ -44,6 +50,7 @@ from .models import (
     SelectStatement,
     Star,
     Statement,
+    Subquery,
     TableRef,
     Token,
     TokenType,
@@ -125,10 +132,18 @@ class Parser:
         found = "end of input" if token.type is TokenType.EOF else repr(token.lexeme)
         raise SqlSyntaxError(f"{message}, found {found}", token.position)
 
-    def _reject_subquery(self) -> NoReturn:
+    def _parse_subquery(self) -> Subquery:
+        """Parsea `SELECT ...` ya dentro de un paréntesis abierto (el `(`
+        lo consumió el llamador; el `)` de cierre también lo cierra él).
+        Reutiliza `_parse_select` sobre el MISMO parser: el contador de
+        placeholders sigue siendo el de la sentencia externa."""
+        return Subquery(statement=self._parse_select())
+
+    def _reject_derived_table(self) -> NoReturn:
         token = self._current()
         raise UnsupportedFeatureError(
-            "subqueries are not supported by this parser subset (see README: excluded constructs)",
+            "derived tables (subqueries in FROM) are not supported by this parser "
+            "subset (see README: excluded constructs)",
             token.position,
         )
 
@@ -165,7 +180,7 @@ class Parser:
             return Like(left, self._parse_additive(), negated)
 
         if self._match_keyword("IN") is not None:
-            return InList(left, self._parse_in_list(), negated)
+            return self._parse_in_rhs(left, negated)
 
         if self._match_keyword("BETWEEN") is not None:
             low = self._parse_additive()
@@ -188,15 +203,21 @@ class Parser:
 
         return left
 
-    def _parse_in_list(self) -> tuple[Expression, ...]:
+    def _parse_in_rhs(self, operand: Expression, negated: bool) -> Expression:
+        """Lado derecho de `[NOT] IN`: o una lista de expresiones o una
+        subconsulta. La distinción se hace aquí (no dejando que `(SELECT
+        ...)` entre como primer elemento de la lista) porque producen nodos
+        distintos con semántica distinta — ver `InSubquery` en models.py."""
         self._expect_type(TokenType.LPAREN, "'('")
         if self._check_keyword("SELECT"):
-            self._reject_subquery()
+            subquery = self._parse_subquery()
+            self._expect_type(TokenType.RPAREN, "')'")
+            return InSubquery(operand=operand, subquery=subquery, negated=negated)
         values = [self.parse_expression()]
         while self._match_type(TokenType.COMMA) is not None:
             values.append(self.parse_expression())
         self._expect_type(TokenType.RPAREN, "')'")
-        return tuple(values)
+        return InList(operand=operand, values=tuple(values), negated=negated)
 
     def _parse_additive(self) -> Expression:
         left = self._parse_multiplicative()
@@ -256,7 +277,9 @@ class Parser:
         if token.type is TokenType.LPAREN:
             self._advance()
             if self._check_keyword("SELECT"):
-                self._reject_subquery()
+                subquery = self._parse_subquery()
+                self._expect_type(TokenType.RPAREN, "')'")
+                return subquery
             expression = self.parse_expression()
             self._expect_type(TokenType.RPAREN, "')'")
             return expression
@@ -384,6 +407,11 @@ class Parser:
         return None
 
     def _parse_table_ref(self) -> TableRef:
+        # Una subconsulta en posición de tabla es una construcción SQL real
+        # (tabla derivada) que este subconjunto excluye: merece el error de
+        # alcance específico, no un "expected identifier" genérico.
+        if self._check_type(TokenType.LPAREN):
+            self._reject_derived_table()
         name = self._expect_identifier()
         alias = self._parse_optional_alias()
         return TableRef(name=name, alias=alias)

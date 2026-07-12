@@ -303,6 +303,42 @@ class SelectStatement(Statement):
     offset: int | None = None
 
 
+# Subquery/InSubquery viven aquí (tras SelectStatement) y no en la sección de
+# expresiones: son los únicos nodos de expresión que envuelven una sentencia
+# completa, cerrando el ciclo expresión → sentencia de la gramática.
+
+
+@dataclass(frozen=True, slots=True)
+class Subquery(Expression):
+    """Subconsulta escalar `(SELECT ...)` usada como expresión primaria.
+
+    El parser no impone aquí las restricciones semánticas de una subconsulta
+    escalar (una única columna proyectada, como mucho una fila): dependen de
+    catálogo y de datos, responsabilidad del consumidor (nanosql). Tampoco
+    distingue subconsultas correlacionadas — una `ColumnRef` de la subconsulta
+    que sólo resuelva contra tablas de la consulta externa se detecta aguas
+    abajo, donde existe el catálogo.
+    """
+
+    statement: SelectStatement
+
+
+@dataclass(frozen=True, slots=True)
+class InSubquery(Expression):
+    """`expr [NOT] IN (SELECT ...)` — pertenencia al resultado de una
+    subconsulta.
+
+    Es un nodo distinto de `InList` (y no un `InList` con un único `Subquery`
+    dentro) porque las semánticas difieren: aquí la subconsulta puede devolver
+    cualquier número de filas, mientras que `x IN ((SELECT ...))` es una lista
+    cuyo único elemento es una subconsulta ESCALAR (máximo una fila).
+    """
+
+    operand: Expression
+    subquery: Subquery
+    negated: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class InsertStatement(Statement):
     """`columns` vacío significa que la sentencia no listó columnas

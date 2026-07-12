@@ -31,7 +31,9 @@ class LexicalError(SqlSyntaxError):
 
 class UnsupportedFeatureError(SqlSyntaxError):
     """Construcción sintácticamente reconocible pero excluida a propósito del
-    subconjunto de SQL documentado (subconsultas, `WITH`, `UNION`, `CASE`...).
+    subconjunto de SQL documentado. Hoy la única que el parser detecta como
+    tal es la tabla derivada (`FROM (SELECT ...)`); `WITH`/`UNION`/`CASE`
+    fallan como `SqlSyntaxError` ordinario porque no llegan a reconocerse.
 
     Se distingue de `SqlSyntaxError` genérico porque el mensaje no describe
     un error de gramática sino una limitación de alcance conocida y

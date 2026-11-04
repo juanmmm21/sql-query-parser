@@ -8,6 +8,8 @@ reservadas. No es un lexer en streaming — el subconjunto soportado nunca
 produce fuentes lo bastante grandes como para justificar esa complejidad.
 """
 
+import re
+
 from .errors import LexicalError
 from .models import Position, Token, TokenType
 
@@ -123,6 +125,23 @@ _SINGLE_CHAR_TOKENS: dict[str, TokenType] = {
 }
 
 
+# Camino rápido del lexer (ver `Lexer._next_token`): los tokens ASCII más
+# comunes se reconocen con una expresión regular en vez de carácter a
+# carácter. Todo lo demás (comentarios, caracteres no ASCII, operadores de
+# dos caracteres, errores) sigue por el camino original, que define el
+# comportamiento: tests/test_lexer_equivalence.py compara ambos.
+_WHITESPACE = re.compile(r"[ \t\r\n]+")
+_ASCII_NUMBER = re.compile(r"[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?")
+_ASCII_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# La comilla de cierre no puede ir seguida de otra: `''` es un escape.
+_STRING = re.compile(r"'(?:[^']|'')*'(?!')")
+# Tras saltar espacios y comentarios, `-` y `/` ya no pueden abrir uno.
+_FAST_PUNCTUATION: dict[str, TokenType] = {
+    **{char: kind for char, kind in _SINGLE_CHAR_TOKENS.items()},
+    "=": TokenType.EQ,
+}
+
+
 class Lexer:
     """Tokeniza una cadena SQL completa de una sola vez."""
 
@@ -163,12 +182,59 @@ class Lexer:
 
     # -- bucle principal ------------------------------------------------------
 
+    def _consume_to(self, end: int) -> None:
+        """Avanza hasta `end` actualizando línea y columna de una vez."""
+        newlines = self._source.count("\n", self._pos, end)
+        if newlines:
+            self._line += newlines
+            self._column = end - self._source.rfind("\n", self._pos, end)
+        else:
+            self._column += end - self._pos
+        self._pos = end
+
     def _next_token(self) -> Token:
-        self._skip_whitespace_and_comments()
-        start = self._current_position()
+        source = self._source
+        blank = _WHITESPACE.match(source, self._pos)
+        if blank is not None:
+            self._consume_to(blank.end())
+        if self._pos < self._length and source[self._pos] in "-/":
+            self._skip_whitespace_and_comments()
+        start = Position(self._line, self._column)
         if self._pos >= self._length:
             return Token(TokenType.EOF, "", None, start)
 
+        char = source[self._pos]
+        kind = _FAST_PUNCTUATION.get(char)
+        if kind is not None:
+            self._pos += 1
+            self._column += 1
+            return Token(kind, char, None, start)
+        if "0" <= char <= "9":
+            number = _ASCII_NUMBER.match(source, self._pos)
+            if number is not None and source[number.end() : number.end() + 3].isascii():
+                lexeme = number.group()
+                self._pos = number.end()
+                self._column += len(lexeme)
+                if number.group(1) or number.group(2):
+                    return Token(TokenType.FLOAT, lexeme, float(lexeme), start)
+                return Token(TokenType.INTEGER, lexeme, int(lexeme), start)
+        elif char == "'":
+            string = _STRING.match(source, self._pos)
+            if string is not None:
+                value = string.group()[1:-1].replace("''", "'")
+                self._consume_to(string.end())
+                return Token(TokenType.STRING, f"'{value}'", value, start)
+        elif char == "_" or "a" <= char <= "z" or "A" <= char <= "Z":
+            word = _ASCII_WORD.match(source, self._pos)
+            if word is not None and (word.end() >= self._length or source[word.end()].isascii()):
+                lexeme = word.group()
+                self._pos = word.end()
+                self._column += len(lexeme)
+                return _word_token(lexeme, start)
+        return self._next_token_slow(start)
+
+    def _next_token_slow(self, start: Position) -> Token:
+        """El camino original, carácter a carácter: define el lexer."""
         char = self._peek()
 
         if char.isdigit():
@@ -276,15 +342,7 @@ class Lexer:
         begin = self._pos
         while self._peek().isalnum() or self._peek() == "_":
             self._advance()
-        lexeme = self._source[begin : self._pos]
-        upper = lexeme.upper()
-        if upper in _TRUE_FALSE:
-            return Token(TokenType.BOOLEAN, upper, _TRUE_FALSE[upper], start)
-        if upper == "NULL":
-            return Token(TokenType.NULL, upper, None, start)
-        if upper in KEYWORDS:
-            return Token(TokenType.KEYWORD, upper, None, start)
-        return Token(TokenType.IDENTIFIER, lexeme, None, start)
+        return _word_token(self._source[begin : self._pos], start)
 
     # -- operadores -------------------------------------------------------------
 
@@ -313,3 +371,14 @@ class Lexer:
         if char in _SINGLE_CHAR_TOKENS:
             return Token(_SINGLE_CHAR_TOKENS[char], char, None, start)
         raise LexicalError(f"unexpected character {char!r}", start)
+
+
+def _word_token(lexeme: str, start: Position) -> Token:
+    upper = lexeme.upper()
+    if upper in _TRUE_FALSE:
+        return Token(TokenType.BOOLEAN, upper, _TRUE_FALSE[upper], start)
+    if upper == "NULL":
+        return Token(TokenType.NULL, upper, None, start)
+    if upper in KEYWORDS:
+        return Token(TokenType.KEYWORD, upper, None, start)
+    return Token(TokenType.IDENTIFIER, lexeme, None, start)

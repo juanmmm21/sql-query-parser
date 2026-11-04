@@ -73,6 +73,16 @@ _COMPARISON_OPERATORS: dict[TokenType, BinaryOperator] = {
 }
 
 
+_EXPRESSION_END = frozenset({TokenType.COMMA, TokenType.RPAREN})
+_ATOM_LITERAL_TYPES: dict[TokenType, LiteralType] = {
+    TokenType.INTEGER: LiteralType.INTEGER,
+    TokenType.FLOAT: LiteralType.FLOAT,
+    TokenType.STRING: LiteralType.STRING,
+    TokenType.BOOLEAN: LiteralType.BOOLEAN,
+    TokenType.NULL: LiteralType.NULL,
+}
+
+
 class Parser:
     """Consume una lista de `Token` (terminada en `EOF`) y produce nodos del
     AST tipado. No conoce el lexer — se puede alimentar directamente con
@@ -156,6 +166,25 @@ class Parser:
     # -> primary
 
     def parse_expression(self) -> Expression:
+        # Camino rápido: un literal, `?` o identificador simple seguido de
+        # `,` o `)` no puede llevar operador detrás, así que la cadena de
+        # precedencia entera (8 comprobaciones de keyword y 9 llamadas)
+        # devolvería exactamente ese nodo primario. Es el caso de cada valor
+        # de una lista VALUES (tests/test_parser_fast_path.py lo compara).
+        token = self._tokens[self._pos]
+        if token.type is not TokenType.EOF and self._tokens[self._pos + 1].type in _EXPRESSION_END:
+            literal_type = _ATOM_LITERAL_TYPES.get(token.type)
+            if literal_type is not None:
+                self._pos += 1
+                return Literal(token.value, literal_type)
+            if token.type is TokenType.PLACEHOLDER:
+                self._pos += 1
+                index = self._placeholder_count
+                self._placeholder_count += 1
+                return Placeholder(index=index)
+            if token.type is TokenType.IDENTIFIER or token.type is TokenType.QUOTED_IDENTIFIER:
+                self._pos += 1
+                return ColumnRef(name=token.lexeme)
         return self._parse_or()
 
     def _parse_or(self) -> Expression:

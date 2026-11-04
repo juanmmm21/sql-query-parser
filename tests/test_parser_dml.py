@@ -1,5 +1,8 @@
 """Tests del parser para `INSERT`, `UPDATE` y `DELETE`."""
 
+import pytest
+
+from sql_query_parser.errors import SqlSyntaxError
 from sql_query_parser.models import (
     BinaryOp,
     BinaryOperator,
@@ -82,3 +85,45 @@ class TestDelete:
         stmt = parse("DELETE FROM t")
         assert isinstance(stmt, DeleteStatement)
         assert stmt.where is None
+
+
+class TestInsertSelect:
+    def test_insert_from_select(self) -> None:
+        from sql_query_parser.models import InsertStatement, SelectStatement
+
+        stmt = parse("INSERT INTO t2 (a, b) SELECT x, y FROM t1 WHERE x > ?")
+        assert isinstance(stmt, InsertStatement)
+        assert stmt.table == "t2" and stmt.columns == ("a", "b") and stmt.rows == ()
+        assert isinstance(stmt.source, SelectStatement)
+        assert stmt.source == parse("SELECT x, y FROM t1 WHERE x > ?")
+
+    def test_values_insert_has_no_source(self) -> None:
+        from sql_query_parser.models import InsertStatement
+
+        stmt = parse("INSERT INTO t VALUES (1)")
+        assert isinstance(stmt, InsertStatement) and stmt.source is None
+
+
+class TestDropTable:
+    def test_drop_table(self) -> None:
+        from sql_query_parser.models import DropTableStatement
+
+        assert parse("DROP TABLE t") == DropTableStatement(table="t")
+        assert parse("DROP TABLE IF EXISTS t;") == DropTableStatement(table="t", if_exists=True)
+
+    def test_analyze(self) -> None:
+        from sql_query_parser.models import AnalyzeStatement
+
+        assert parse("ANALYZE") == AnalyzeStatement()
+        assert parse("ANALYZE;") == AnalyzeStatement()
+        assert parse("analyze orders") == AnalyzeStatement(table="orders")
+        with pytest.raises(SqlSyntaxError):
+            parse("ANALYZE 1")
+
+    def test_drop_requires_table(self) -> None:
+        import pytest
+
+        from sql_query_parser import SqlSyntaxError
+
+        with pytest.raises(SqlSyntaxError):
+            parse("DROP INDEX i")

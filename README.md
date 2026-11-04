@@ -49,15 +49,17 @@ source text ──▶ Lexer.tokenize() ──▶ list[Token] ──▶ Parser.pa
 
 The lexer runs once, eagerly, over the whole input (`Lexer` is not a generator) — the SQL subset this project targets never produces inputs large enough to justify a streaming/lazy tokenizer, and an eager list is simpler to reason about and to unit-test in isolation. The parser is a classic recursive-descent parser over that token list; it never looks back at the source text, only at `Token.position` for error reporting.
 
+**Two fast paths, both proven equivalent.** `nanosql` feeds this parser bulk-load `INSERT`s of 500 rows, which made lexing and parsing a measurable part of a load. The lexer recognises the common ASCII tokens (whitespace, numbers, identifiers and keywords, string literals, single-character punctuation) with regular expressions instead of character by character; comments, non-ASCII text (the original `isdigit`/`isalnum` checks accept Unicode digits and letters), two-character operators and every error still go through the original character-by-character code, which defines the behaviour. `tests/_reference_lexer.py` is a verbatim copy of the previous lexer, and `tests/test_lexer_equivalence.py` requires identical tokens (type, lexeme, value, line, column) or identical exceptions on hand-picked edge cases and 8,000 Hypothesis inputs. In the parser, a literal, `?` or plain identifier followed by `,` or `)` cannot take an operator, so `parse_expression` returns it without walking the eight-level precedence chain; `tests/test_parser_fast_path.py` compares ASTs (placeholder numbering included) and errors against a parser that always walks it. On a 500-row `INSERT` this makes parsing 3.3–3.6x faster and lexing 1.1–1.3x (creating the immutable `Token`/`Position` objects is now most of the lexer's cost).
+
 ### Supported grammar (documented subset)
 
 The subset covers the everyday core of SQL-92/SQL:1999 DDL and DML. In EBNF-ish notation (`[]` optional, `{}` zero-or-more, `|` alternation):
 
 ```text
 statement       := select_stmt | insert_stmt | update_stmt | delete_stmt
-                  | create_table_stmt | create_index_stmt
+                  | create_table_stmt | create_index_stmt | drop_table_stmt | analyze_stmt
 
-select_stmt     := SELECT [DISTINCT] select_list
+select_stmt     := SELECT [DISTINCT | ALL] select_list
                     FROM table_ref { join }
                     [WHERE expr]
                     [GROUP BY expr {',' expr}]
@@ -69,10 +71,11 @@ select_list     := '*' | select_item {',' select_item}
 select_item     := expr [[AS] alias]
 table_ref       := identifier [[AS] alias]
 join            := [INNER | LEFT [OUTER] | RIGHT [OUTER] | FULL [OUTER]] JOIN table_ref ON expr
+                  | ',' table_ref | CROSS JOIN table_ref   -- both mean INNER JOIN ... ON TRUE
 order_item      := expr [ASC | DESC]
 
 insert_stmt     := INSERT INTO identifier ['(' identifier {',' identifier} ')']
-                    VALUES value_row {',' value_row}
+                    ( VALUES value_row {',' value_row} | select_stmt )
 value_row       := '(' expr {',' expr} ')'
 
 update_stmt     := UPDATE identifier SET assignment {',' assignment} [WHERE expr]
@@ -81,10 +84,16 @@ assignment      := identifier '=' expr
 delete_stmt     := DELETE FROM identifier [WHERE expr]
 
 create_table_stmt := CREATE TABLE [IF NOT EXISTS] identifier
-                      '(' column_def {',' column_def} ')'
+                      '(' column_def {',' column_def} {',' table_constraint} ')'
+table_constraint := [CONSTRAINT identifier] (PRIMARY KEY | UNIQUE)
+                      '(' identifier {',' identifier} ')'
 column_def      := identifier data_type { column_constraint }
 column_constraint := NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT expr
 data_type       := type_keyword ['(' integer [',' integer] ')']
+
+drop_table_stmt := DROP TABLE [IF EXISTS] identifier
+
+analyze_stmt    := ANALYZE [identifier]     -- refresh optimizer statistics (one table or all)
 
 create_index_stmt := CREATE [UNIQUE] INDEX [IF NOT EXISTS] identifier
                       ON identifier '(' identifier {',' identifier} ')'
@@ -107,7 +116,7 @@ primary         := literal | column_ref | function_call | placeholder | '*'
 placeholder     := '?'   -- positional query parameter, indexed per statement in order of appearance;
                          -- placeholders inside a subquery continue the outer statement's numbering
 column_ref      := identifier ['.' identifier]
-function_call   := identifier '(' ( '*' | [DISTINCT] [expr {',' expr}] ) ')'
+function_call   := identifier '(' ( '*' | [DISTINCT | ALL] [expr {',' expr}] ) ')'
 literal         := INTEGER | FLOAT | STRING | TRUE | FALSE | NULL
 ```
 
@@ -116,6 +125,7 @@ Notes worth calling out explicitly:
 - **Comparisons do not chain.** `comparison` appears exactly once per `not_expr`, never in a loop — `a = b = c` is a syntax error, matching standard SQL (there is no boolean-of-comparisons coercion).
 - **Identifiers** may be unquoted (`[A-Za-z_][A-Za-z0-9_]*`, case-insensitive for keyword matching, case *preserved* in the AST) or double-quoted with `""` as the escape for an embedded `"` (`"a""b"` → `a"b`), letting a quoted identifier collide textually with a reserved word.
 - **Comments**: `-- line comments` and `/* block comments */` (non-nesting) are recognized by the lexer and never reach the parser.
+- **Table-level constraints** (`PRIMARY KEY (a, b)`, `UNIQUE (c)`, optionally named with a contextual `CONSTRAINT name` prefix) are parsed into `CreateTableStatement.constraints` (`TableConstraint` nodes). They must follow every column definition, as in standard SQL — this is the form ORMs such as SQLAlchemy emit for primary keys. `CONSTRAINT` is not a reserved word: a column may still be named `constraint`.
 - **`INSERT` without an explicit column list** (`INSERT INTO t VALUES (...)`) is supported; `InsertStatement.columns` is an empty tuple in that case, meaning "all columns, in table-definition order" — resolving that order is `nanosql`'s job, not this parser's.
 - **Subqueries are expressions, not table sources.** `(SELECT ...)` as a primary expression produces a `Subquery` node (a scalar subquery), and `x [NOT] IN (SELECT ...)` produces a dedicated `InSubquery` node — deliberately distinct from `InList`, because `x IN ((SELECT ...))` (a one-element list whose element is a *scalar* subquery, at most one row) does not mean the same thing as `x IN (SELECT ...)` (membership in a result of any size). The parser imposes no semantic restrictions on subqueries: single-column projection, single-row scalar results and the no-correlation rule are all checked by the consumer (`nanosql`), which is the first layer with catalog access. Subqueries share the parser instance with their outer statement, so `?` placeholders inside them continue the outer statement's per-statement numbering.
 
@@ -132,7 +142,7 @@ These are recognized as *known gaps*, not silently mis-parsed. Some fail with a 
 | `CASE WHEN ... THEN ... END` | `SELECT CASE WHEN a=1 THEN 'x' END FROM t` | `SqlSyntaxError` |
 | Window functions (`OVER (...)`) | `SELECT rank() OVER (...) FROM t` | `SqlSyntaxError` |
 | `CAST(expr AS type)` | `SELECT CAST(a AS INTEGER)` | `SqlSyntaxError` |
-| `ALTER TABLE`, `DROP`, views, triggers | — | Not part of `statement` at all |
+| `ALTER TABLE`, `DROP INDEX`/`DROP VIEW`, views, triggers | — | Not part of `statement` at all (`DROP TABLE` is) |
 | Transactions (`BEGIN`/`COMMIT`/`ROLLBACK`) | — | Out of scope: this module parses statements, not a session protocol |
 
 The line is deliberate: this parser covers the fragment of SQL a query optimizer and a vectorized executor need to demonstrate real relational query processing (`cost-based-query-optimizer`, `vectorized-execution-engine`), without growing into a full SQL:2016 grammar that would dwarf the rest of the ecosystem.
@@ -232,7 +242,7 @@ ruff format --check .
 mypy --strict src/
 ```
 
-155 tests across eight files:
+217 tests across ten files (the counts below are those of the original eight; `test_parser_fast_path.py`, `test_lexer_equivalence.py` and the `ANALYZE`/constraint/join additions account for the rest):
 
 - `test_lexer.py` (43): identifiers, keywords, quoted identifiers with escaping, numeric/string/boolean/null literals, every operator, comments, and line/column tracking across multiple lines.
 - `test_parser_select.py` (34): `SELECT` with `DISTINCT`, aliases, all four `JOIN` kinds, `WHERE`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`/`OFFSET`, aggregate function calls, and the explicitly-excluded-construct battery (derived tables, `UNION`, `WITH`, `CASE`).

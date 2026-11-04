@@ -280,6 +280,24 @@ class ColumnDefinition:
     default: Expression | None = None
 
 
+class TableConstraintKind(Enum):
+    PRIMARY_KEY = auto()
+    UNIQUE = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class TableConstraint:
+    """Restricción a nivel de tabla de `CREATE TABLE`:
+    `[CONSTRAINT nombre] PRIMARY KEY (a, b)` o `[CONSTRAINT nombre] UNIQUE (a)`.
+    Es la forma que generan los ORMs (SQLAlchemy emite siempre la clave
+    primaria como restricción de tabla). Validar que las columnas existan
+    es trabajo del consumidor, igual que con el resto del DDL."""
+
+    kind: TableConstraintKind
+    columns: tuple[str, ...]
+    name: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Sentencias de nivel superior
 # ---------------------------------------------------------------------------
@@ -348,6 +366,9 @@ class InsertStatement(Statement):
     table: str
     columns: tuple[str, ...]
     rows: tuple[tuple[Expression, ...], ...]
+    # `INSERT INTO t [(cols)] SELECT ...`: las filas salen de la consulta y
+    # `rows` queda vacío. Ejecutarla (y casar sus columnas) es del consumidor.
+    source: SelectStatement | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +389,21 @@ class CreateTableStatement(Statement):
     table: str
     columns: tuple[ColumnDefinition, ...]
     if_not_exists: bool = False
+    constraints: tuple[TableConstraint, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DropTableStatement(Statement):
+    table: str
+    if_exists: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyzeStatement(Statement):
+    """`ANALYZE [tabla]`: recalcular las estadísticas del optimizador de
+    una tabla, o de todas si `table` es `None`."""
+
+    table: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

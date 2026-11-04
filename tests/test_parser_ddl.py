@@ -80,3 +80,62 @@ class TestCreateIndex:
         stmt = parse("CREATE INDEX IF NOT EXISTS idx_name ON t (name)")
         assert isinstance(stmt, CreateIndexStatement)
         assert stmt.if_not_exists is True
+
+
+class TestTableConstraints:
+    """Restricciones a nivel de tabla: la forma que generan los ORMs."""
+
+    def test_table_level_primary_key(self) -> None:
+        from sql_query_parser.models import TableConstraint, TableConstraintKind
+
+        stmt = parse(
+            "CREATE TABLE users (\n\tid INTEGER NOT NULL, \n\tname VARCHAR(50), "
+            "\n\tPRIMARY KEY (id)\n)"
+        )
+        assert isinstance(stmt, CreateTableStatement)
+        assert [c.name for c in stmt.columns] == ["id", "name"]
+        assert stmt.constraints == (
+            TableConstraint(kind=TableConstraintKind.PRIMARY_KEY, columns=("id",)),
+        )
+
+    def test_named_and_multi_column_constraints(self) -> None:
+        from sql_query_parser.models import TableConstraint, TableConstraintKind
+
+        stmt = parse(
+            "CREATE TABLE t (a INTEGER, b INTEGER, c TEXT, "
+            "CONSTRAINT t_pk PRIMARY KEY (a, b), UNIQUE (c), CONSTRAINT uq UNIQUE (b, c))"
+        )
+        assert isinstance(stmt, CreateTableStatement)
+        assert stmt.constraints == (
+            TableConstraint(TableConstraintKind.PRIMARY_KEY, ("a", "b"), "t_pk"),
+            TableConstraint(TableConstraintKind.UNIQUE, ("c",), None),
+            TableConstraint(TableConstraintKind.UNIQUE, ("b", "c"), "uq"),
+        )
+
+    def test_constraint_is_contextual_not_reserved(self) -> None:
+        # Una columna puede seguir llamándose "constraint".
+        stmt = parse("CREATE TABLE t (constraint INTEGER, x TEXT)")
+        assert isinstance(stmt, CreateTableStatement)
+        assert [c.name for c in stmt.columns] == ["constraint", "x"]
+        assert stmt.constraints == ()
+
+    def test_column_after_table_constraint_is_rejected(self) -> None:
+        import pytest
+
+        from sql_query_parser import SqlSyntaxError
+
+        with pytest.raises(SqlSyntaxError, match="table constraint"):
+            parse("CREATE TABLE t (a INTEGER, PRIMARY KEY (a), b INTEGER)")
+
+    def test_constraints_only_is_rejected(self) -> None:
+        import pytest
+
+        from sql_query_parser import SqlSyntaxError
+
+        with pytest.raises(SqlSyntaxError, match="column definition"):
+            parse("CREATE TABLE t (PRIMARY KEY (a))")
+
+    def test_default_constraints_field_is_empty(self) -> None:
+        stmt = parse("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        assert isinstance(stmt, CreateTableStatement)
+        assert stmt.constraints == ()

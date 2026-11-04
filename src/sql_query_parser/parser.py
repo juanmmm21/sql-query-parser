@@ -22,6 +22,7 @@ from typing import NoReturn
 from .errors import SqlSyntaxError, UnsupportedFeatureError
 from .lexer import DATA_TYPE_KEYWORDS
 from .models import (
+    AnalyzeStatement,
     Assignment,
     Between,
     BinaryOp,
@@ -32,6 +33,7 @@ from .models import (
     CreateTableStatement,
     DataType,
     DeleteStatement,
+    DropTableStatement,
     Expression,
     FunctionCall,
     InList,
@@ -51,6 +53,8 @@ from .models import (
     Star,
     Statement,
     Subquery,
+    TableConstraint,
+    TableConstraintKind,
     TableRef,
     Token,
     TokenType,
@@ -66,6 +70,16 @@ _COMPARISON_OPERATORS: dict[TokenType, BinaryOperator] = {
     TokenType.LE: BinaryOperator.LE,
     TokenType.GT: BinaryOperator.GT,
     TokenType.GE: BinaryOperator.GE,
+}
+
+
+_EXPRESSION_END = frozenset({TokenType.COMMA, TokenType.RPAREN})
+_ATOM_LITERAL_TYPES: dict[TokenType, LiteralType] = {
+    TokenType.INTEGER: LiteralType.INTEGER,
+    TokenType.FLOAT: LiteralType.FLOAT,
+    TokenType.STRING: LiteralType.STRING,
+    TokenType.BOOLEAN: LiteralType.BOOLEAN,
+    TokenType.NULL: LiteralType.NULL,
 }
 
 
@@ -152,6 +166,25 @@ class Parser:
     # -> primary
 
     def parse_expression(self) -> Expression:
+        # Camino rápido: un literal, `?` o identificador simple seguido de
+        # `,` o `)` no puede llevar operador detrás, así que la cadena de
+        # precedencia entera (8 comprobaciones de keyword y 9 llamadas)
+        # devolvería exactamente ese nodo primario. Es el caso de cada valor
+        # de una lista VALUES (tests/test_parser_fast_path.py lo compara).
+        token = self._tokens[self._pos]
+        if token.type is not TokenType.EOF and self._tokens[self._pos + 1].type in _EXPRESSION_END:
+            literal_type = _ATOM_LITERAL_TYPES.get(token.type)
+            if literal_type is not None:
+                self._pos += 1
+                return Literal(token.value, literal_type)
+            if token.type is TokenType.PLACEHOLDER:
+                self._pos += 1
+                index = self._placeholder_count
+                self._placeholder_count += 1
+                return Placeholder(index=index)
+            if token.type is TokenType.IDENTIFIER or token.type is TokenType.QUOTED_IDENTIFIER:
+                self._pos += 1
+                return ColumnRef(name=token.lexeme)
         return self._parse_or()
 
     def _parse_or(self) -> Expression:
@@ -307,7 +340,8 @@ class Parser:
             self._expect_type(TokenType.RPAREN, "')'")
             return FunctionCall(name=name, star_argument=True)
 
-        distinct = self._match_keyword("DISTINCT") is not None
+        quantifier = self._match_keyword("DISTINCT", "ALL")
+        distinct = quantifier is not None and quantifier.lexeme == "DISTINCT"
 
         if self._match_type(TokenType.RPAREN) is not None:
             return FunctionCall(name=name, distinct=distinct)
@@ -335,7 +369,13 @@ class Parser:
             return self._parse_delete()
         if self._check_keyword("CREATE"):
             return self._parse_create()
-        self._error("expected a SELECT, INSERT, UPDATE, DELETE or CREATE statement")
+        if self._check_keyword("DROP"):
+            return self._parse_drop()
+        if self._match_keyword("ANALYZE") is not None:
+            at_end = self._check_type(TokenType.SEMICOLON) or self._check_type(TokenType.EOF)
+            table = None if at_end else self._expect_identifier()
+            return AnalyzeStatement(table=table)
+        self._error("expected a SELECT, INSERT, UPDATE, DELETE, CREATE, DROP or ANALYZE statement")
 
     def parse_single_statement(self) -> Statement:
         """Parsea exactamente una sentencia, con `;` final opcional, y exige
@@ -362,7 +402,11 @@ class Parser:
 
     def _parse_select(self) -> SelectStatement:
         self._expect_keyword("SELECT")
-        distinct = self._match_keyword("DISTINCT") is not None
+        # Cuantificador de conjunto: DISTINCT, o ALL explícito (el valor por
+        # defecto). Antes ALL no era palabra clave y `SELECT ALL - x` se
+        # parseaba en silencio como la resta de una columna llamada ALL.
+        quantifier = self._match_keyword("DISTINCT", "ALL")
+        distinct = quantifier is not None and quantifier.lexeme == "DISTINCT"
         columns = self._parse_select_list()
         self._expect_keyword("FROM")
         from_table = self._parse_table_ref()
@@ -417,8 +461,25 @@ class Parser:
         return TableRef(name=name, alias=alias)
 
     def _parse_joins(self) -> tuple[Join, ...]:
+        """Cadena de joins tras la primera tabla. `FROM a, b` y
+        `a CROSS JOIN b` son, por definición de SQL, `a INNER JOIN b ON
+        TRUE`: se representan así (no hay nodo propio de producto
+        cartesiano) y las condiciones del WHERE quedan para el optimizador,
+        que ya las reparte entre los pasos de join."""
         joins: list[Join] = []
         while True:
+            if self._match_type(TokenType.COMMA) is not None or (
+                self._match_keyword("CROSS") is not None and self._expect_keyword("JOIN")
+            ):
+                table = self._parse_table_ref()
+                joins.append(
+                    Join(
+                        join_type=JoinType.INNER,
+                        table=table,
+                        on=Literal(True, LiteralType.BOOLEAN),
+                    )
+                )
+                continue
             join_type = self._try_parse_join_type()
             if join_type is None:
                 break
@@ -512,6 +573,9 @@ class Parser:
                 names.append(self._expect_identifier())
             self._expect_type(TokenType.RPAREN, "')'")
             columns = tuple(names)
+        if self._check_keyword("SELECT"):
+            source = self._parse_select()
+            return InsertStatement(table=table, columns=columns, rows=(), source=source)
         self._expect_keyword("VALUES")
         rows = [self._parse_value_row()]
         while self._match_type(TokenType.COMMA) is not None:
@@ -565,6 +629,15 @@ class Parser:
             return self._parse_create_table()
         self._error("expected TABLE or INDEX after CREATE")
 
+    def _parse_drop(self) -> DropTableStatement:
+        self._expect_keyword("DROP")
+        self._expect_keyword("TABLE")
+        if_exists = False
+        if self._match_keyword("IF") is not None:
+            self._expect_keyword("EXISTS")
+            if_exists = True
+        return DropTableStatement(table=self._expect_identifier(), if_exists=if_exists)
+
     def _parse_if_not_exists(self) -> bool:
         if self._match_keyword("IF") is not None:
             self._expect_keyword("NOT")
@@ -577,13 +650,61 @@ class Parser:
         if_not_exists = self._parse_if_not_exists()
         table = self._expect_identifier()
         self._expect_type(TokenType.LPAREN, "'('")
-        columns = [self._parse_column_definition()]
-        while self._match_type(TokenType.COMMA) is not None:
-            columns.append(self._parse_column_definition())
+        columns: list[ColumnDefinition] = []
+        constraints: list[TableConstraint] = []
+        while True:
+            if self._at_table_constraint():
+                constraints.append(self._parse_table_constraint())
+            elif constraints:
+                # SQL estándar: las restricciones de tabla van detrás de todas
+                # las columnas; una columna después de ellas es un error.
+                self._error("expected a table constraint after a table constraint")
+            else:
+                columns.append(self._parse_column_definition())
+            if self._match_type(TokenType.COMMA) is None:
+                break
+        if not columns:
+            self._error("expected at least one column definition")
         self._expect_type(TokenType.RPAREN, "')'")
         return CreateTableStatement(
-            table=table, columns=tuple(columns), if_not_exists=if_not_exists
+            table=table,
+            columns=tuple(columns),
+            if_not_exists=if_not_exists,
+            constraints=tuple(constraints),
         )
+
+    def _at_table_constraint(self) -> bool:
+        """`CONSTRAINT` es contextual (no palabra reservada): una columna
+        puede seguir llamándose `constraint`. Sólo cuenta como inicio de
+        restricción si le sigue un identificador y después PRIMARY/UNIQUE."""
+        if self._check_keyword("PRIMARY", "UNIQUE"):
+            return True
+        token = self._current()
+        if token.type is not TokenType.IDENTIFIER or token.lexeme.upper() != "CONSTRAINT":
+            return False
+        if self._pos + 2 >= len(self._tokens):
+            return False
+        after_name = self._tokens[self._pos + 2]
+        return after_name.type is TokenType.KEYWORD and after_name.lexeme in ("PRIMARY", "UNIQUE")
+
+    def _parse_table_constraint(self) -> TableConstraint:
+        name: str | None = None
+        token = self._current()
+        if token.type is TokenType.IDENTIFIER and token.lexeme.upper() == "CONSTRAINT":
+            self._advance()
+            name = self._expect_identifier()
+        if self._match_keyword("PRIMARY") is not None:
+            self._expect_keyword("KEY")
+            kind = TableConstraintKind.PRIMARY_KEY
+        else:
+            self._expect_keyword("UNIQUE")
+            kind = TableConstraintKind.UNIQUE
+        self._expect_type(TokenType.LPAREN, "'('")
+        names = [self._expect_identifier()]
+        while self._match_type(TokenType.COMMA) is not None:
+            names.append(self._expect_identifier())
+        self._expect_type(TokenType.RPAREN, "')'")
+        return TableConstraint(kind=kind, columns=tuple(names), name=name)
 
     def _parse_column_definition(self) -> ColumnDefinition:
         name = self._expect_identifier()

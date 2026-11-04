@@ -225,3 +225,30 @@ class TestAllQuantifier:
 
         with pytest.raises(SqlSyntaxError):
             parse("SELECT all FROM t")
+
+
+class TestCommaAndCrossJoins:
+    """`FROM a, b` y `CROSS JOIN` son `INNER JOIN ... ON TRUE`."""
+
+    def test_comma_join_is_inner_join_on_true(self) -> None:
+        assert parse("SELECT * FROM a, b AS x WHERE a.k = x.k") == parse(
+            "SELECT * FROM a INNER JOIN b AS x ON TRUE WHERE a.k = x.k"
+        )
+
+    def test_cross_join(self) -> None:
+        assert parse("SELECT * FROM a CROSS JOIN b") == parse("SELECT * FROM a JOIN b ON TRUE")
+
+    def test_mixed_chain_keeps_written_order(self) -> None:
+        from sql_query_parser.models import JoinType, SelectStatement
+
+        stmt = parse("SELECT * FROM a, b LEFT JOIN c ON b.k = c.k, d")
+        assert isinstance(stmt, SelectStatement)
+        assert [(j.join_type, j.table.name) for j in stmt.joins] == [
+            (JoinType.INNER, "b"),
+            (JoinType.LEFT, "c"),
+            (JoinType.INNER, "d"),
+        ]
+
+    def test_cross_join_does_not_take_on(self) -> None:
+        with pytest.raises(SqlSyntaxError):
+            parse("SELECT * FROM a CROSS JOIN b ON a.k = b.k")

@@ -427,8 +427,25 @@ class Parser:
         return TableRef(name=name, alias=alias)
 
     def _parse_joins(self) -> tuple[Join, ...]:
+        """Cadena de joins tras la primera tabla. `FROM a, b` y
+        `a CROSS JOIN b` son, por definición de SQL, `a INNER JOIN b ON
+        TRUE`: se representan así (no hay nodo propio de producto
+        cartesiano) y las condiciones del WHERE quedan para el optimizador,
+        que ya las reparte entre los pasos de join."""
         joins: list[Join] = []
         while True:
+            if self._match_type(TokenType.COMMA) is not None or (
+                self._match_keyword("CROSS") is not None and self._expect_keyword("JOIN")
+            ):
+                table = self._parse_table_ref()
+                joins.append(
+                    Join(
+                        join_type=JoinType.INNER,
+                        table=table,
+                        on=Literal(True, LiteralType.BOOLEAN),
+                    )
+                )
+                continue
             join_type = self._try_parse_join_type()
             if join_type is None:
                 break

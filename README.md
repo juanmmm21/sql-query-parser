@@ -69,6 +69,7 @@ select_list     := '*' | select_item {',' select_item}
 select_item     := expr [[AS] alias]
 table_ref       := identifier [[AS] alias]
 join            := [INNER | LEFT [OUTER] | RIGHT [OUTER] | FULL [OUTER]] JOIN table_ref ON expr
+                  | ',' table_ref | CROSS JOIN table_ref   -- both mean INNER JOIN ... ON TRUE
 order_item      := expr [ASC | DESC]
 
 insert_stmt     := INSERT INTO identifier ['(' identifier {',' identifier} ')']

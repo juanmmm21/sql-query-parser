@@ -23,6 +23,7 @@ KEYWORDS: frozenset[str] = frozenset(
         "DISTINCT",
         "ALL",
         "JOIN",
+        "CROSS",
         "INNER",
         "LEFT",
         "RIGHT",

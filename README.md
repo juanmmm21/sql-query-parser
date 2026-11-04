@@ -55,7 +55,7 @@ The subset covers the everyday core of SQL-92/SQL:1999 DDL and DML. In EBNF-ish 
 
 ```text
 statement       := select_stmt | insert_stmt | update_stmt | delete_stmt
-                  | create_table_stmt | create_index_stmt
+                  | create_table_stmt | create_index_stmt | drop_table_stmt
 
 select_stmt     := SELECT [DISTINCT | ALL] select_list
                     FROM table_ref { join }
@@ -72,7 +72,7 @@ join            := [INNER | LEFT [OUTER] | RIGHT [OUTER] | FULL [OUTER]] JOIN ta
 order_item      := expr [ASC | DESC]
 
 insert_stmt     := INSERT INTO identifier ['(' identifier {',' identifier} ')']
-                    VALUES value_row {',' value_row}
+                    ( VALUES value_row {',' value_row} | select_stmt )
 value_row       := '(' expr {',' expr} ')'
 
 update_stmt     := UPDATE identifier SET assignment {',' assignment} [WHERE expr]
@@ -87,6 +87,8 @@ table_constraint := [CONSTRAINT identifier] (PRIMARY KEY | UNIQUE)
 column_def      := identifier data_type { column_constraint }
 column_constraint := NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT expr
 data_type       := type_keyword ['(' integer [',' integer] ')']
+
+drop_table_stmt := DROP TABLE [IF EXISTS] identifier
 
 create_index_stmt := CREATE [UNIQUE] INDEX [IF NOT EXISTS] identifier
                       ON identifier '(' identifier {',' identifier} ')'
@@ -135,7 +137,7 @@ These are recognized as *known gaps*, not silently mis-parsed. Some fail with a 
 | `CASE WHEN ... THEN ... END` | `SELECT CASE WHEN a=1 THEN 'x' END FROM t` | `SqlSyntaxError` |
 | Window functions (`OVER (...)`) | `SELECT rank() OVER (...) FROM t` | `SqlSyntaxError` |
 | `CAST(expr AS type)` | `SELECT CAST(a AS INTEGER)` | `SqlSyntaxError` |
-| `ALTER TABLE`, `DROP`, views, triggers | — | Not part of `statement` at all |
+| `ALTER TABLE`, `DROP INDEX`/`DROP VIEW`, views, triggers | — | Not part of `statement` at all (`DROP TABLE` is) |
 | Transactions (`BEGIN`/`COMMIT`/`ROLLBACK`) | — | Out of scope: this module parses statements, not a session protocol |
 
 The line is deliberate: this parser covers the fragment of SQL a query optimizer and a vectorized executor need to demonstrate real relational query processing (`cost-based-query-optimizer`, `vectorized-execution-engine`), without growing into a full SQL:2016 grammar that would dwarf the rest of the ecosystem.

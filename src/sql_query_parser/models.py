@@ -366,6 +366,9 @@ class InsertStatement(Statement):
     table: str
     columns: tuple[str, ...]
     rows: tuple[tuple[Expression, ...], ...]
+    # `INSERT INTO t [(cols)] SELECT ...`: las filas salen de la consulta y
+    # `rows` queda vacío. Ejecutarla (y casar sus columnas) es del consumidor.
+    source: SelectStatement | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +390,12 @@ class CreateTableStatement(Statement):
     columns: tuple[ColumnDefinition, ...]
     if_not_exists: bool = False
     constraints: tuple[TableConstraint, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DropTableStatement(Statement):
+    table: str
+    if_exists: bool = False
 
 
 @dataclass(frozen=True, slots=True)

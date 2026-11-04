@@ -32,6 +32,7 @@ from .models import (
     CreateTableStatement,
     DataType,
     DeleteStatement,
+    DropTableStatement,
     Expression,
     FunctionCall,
     InList,
@@ -338,7 +339,9 @@ class Parser:
             return self._parse_delete()
         if self._check_keyword("CREATE"):
             return self._parse_create()
-        self._error("expected a SELECT, INSERT, UPDATE, DELETE or CREATE statement")
+        if self._check_keyword("DROP"):
+            return self._parse_drop()
+        self._error("expected a SELECT, INSERT, UPDATE, DELETE, CREATE or DROP statement")
 
     def parse_single_statement(self) -> Statement:
         """Parsea exactamente una sentencia, con `;` final opcional, y exige
@@ -519,6 +522,9 @@ class Parser:
                 names.append(self._expect_identifier())
             self._expect_type(TokenType.RPAREN, "')'")
             columns = tuple(names)
+        if self._check_keyword("SELECT"):
+            source = self._parse_select()
+            return InsertStatement(table=table, columns=columns, rows=(), source=source)
         self._expect_keyword("VALUES")
         rows = [self._parse_value_row()]
         while self._match_type(TokenType.COMMA) is not None:
@@ -571,6 +577,15 @@ class Parser:
         if self._check_keyword("TABLE"):
             return self._parse_create_table()
         self._error("expected TABLE or INDEX after CREATE")
+
+    def _parse_drop(self) -> DropTableStatement:
+        self._expect_keyword("DROP")
+        self._expect_keyword("TABLE")
+        if_exists = False
+        if self._match_keyword("IF") is not None:
+            self._expect_keyword("EXISTS")
+            if_exists = True
+        return DropTableStatement(table=self._expect_identifier(), if_exists=if_exists)
 
     def _parse_if_not_exists(self) -> bool:
         if self._match_keyword("IF") is not None:

@@ -309,7 +309,8 @@ class Parser:
             self._expect_type(TokenType.RPAREN, "')'")
             return FunctionCall(name=name, star_argument=True)
 
-        distinct = self._match_keyword("DISTINCT") is not None
+        quantifier = self._match_keyword("DISTINCT", "ALL")
+        distinct = quantifier is not None and quantifier.lexeme == "DISTINCT"
 
         if self._match_type(TokenType.RPAREN) is not None:
             return FunctionCall(name=name, distinct=distinct)
@@ -364,7 +365,11 @@ class Parser:
 
     def _parse_select(self) -> SelectStatement:
         self._expect_keyword("SELECT")
-        distinct = self._match_keyword("DISTINCT") is not None
+        # Cuantificador de conjunto: DISTINCT, o ALL explícito (el valor por
+        # defecto). Antes ALL no era palabra clave y `SELECT ALL - x` se
+        # parseaba en silencio como la resta de una columna llamada ALL.
+        quantifier = self._match_keyword("DISTINCT", "ALL")
+        distinct = quantifier is not None and quantifier.lexeme == "DISTINCT"
         columns = self._parse_select_list()
         self._expect_keyword("FROM")
         from_table = self._parse_table_ref()

@@ -199,3 +199,29 @@ class TestExplicitlyExcludedConstructs:
     def test_case_expression_is_a_syntax_error(self) -> None:
         with pytest.raises(SqlSyntaxError):
             parse("SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END FROM t")
+
+
+class TestAllQuantifier:
+    """`ALL` es el cuantificador por defecto: `SELECT ALL` y `COUNT(ALL x)`
+    equivalen a no escribirlo. Antes `ALL` era un identificador y
+    `SELECT ALL - x FROM t` se parseaba como `"ALL" - x`."""
+
+    def test_select_all_is_the_default_quantifier(self) -> None:
+        from sql_query_parser.models import SelectStatement
+
+        explicit = parse("SELECT ALL - x AS y FROM t")
+        implicit = parse("SELECT - x AS y FROM t")
+        assert isinstance(explicit, SelectStatement)
+        assert explicit == implicit
+        assert explicit.distinct is False
+
+    def test_aggregate_all_argument(self) -> None:
+        assert parse("SELECT COUNT(ALL x) FROM t") == parse("SELECT COUNT(x) FROM t")
+
+    def test_all_is_reserved(self) -> None:
+        import pytest
+
+        from sql_query_parser import SqlSyntaxError
+
+        with pytest.raises(SqlSyntaxError):
+            parse("SELECT all FROM t")

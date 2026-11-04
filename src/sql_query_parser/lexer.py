@@ -21,6 +21,7 @@ KEYWORDS: frozenset[str] = frozenset(
         "NOT",
         "AS",
         "DISTINCT",
+        "ALL",
         "JOIN",
         "INNER",
         "LEFT",

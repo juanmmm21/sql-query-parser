@@ -57,7 +57,7 @@ The subset covers the everyday core of SQL-92/SQL:1999 DDL and DML. In EBNF-ish 
 statement       := select_stmt | insert_stmt | update_stmt | delete_stmt
                   | create_table_stmt | create_index_stmt
 
-select_stmt     := SELECT [DISTINCT] select_list
+select_stmt     := SELECT [DISTINCT | ALL] select_list
                     FROM table_ref { join }
                     [WHERE expr]
                     [GROUP BY expr {',' expr}]
@@ -109,7 +109,7 @@ primary         := literal | column_ref | function_call | placeholder | '*'
 placeholder     := '?'   -- positional query parameter, indexed per statement in order of appearance;
                          -- placeholders inside a subquery continue the outer statement's numbering
 column_ref      := identifier ['.' identifier]
-function_call   := identifier '(' ( '*' | [DISTINCT] [expr {',' expr}] ) ')'
+function_call   := identifier '(' ( '*' | [DISTINCT | ALL] [expr {',' expr}] ) ')'
 literal         := INTEGER | FLOAT | STRING | TRUE | FALSE | NULL
 ```
 

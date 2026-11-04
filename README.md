@@ -49,6 +49,8 @@ source text ──▶ Lexer.tokenize() ──▶ list[Token] ──▶ Parser.pa
 
 The lexer runs once, eagerly, over the whole input (`Lexer` is not a generator) — the SQL subset this project targets never produces inputs large enough to justify a streaming/lazy tokenizer, and an eager list is simpler to reason about and to unit-test in isolation. The parser is a classic recursive-descent parser over that token list; it never looks back at the source text, only at `Token.position` for error reporting.
 
+**Two fast paths, both proven equivalent.** `nanosql` feeds this parser bulk-load `INSERT`s of 500 rows, which made lexing and parsing a measurable part of a load. The lexer recognises the common ASCII tokens (whitespace, numbers, identifiers and keywords, string literals, single-character punctuation) with regular expressions instead of character by character; comments, non-ASCII text (the original `isdigit`/`isalnum` checks accept Unicode digits and letters), two-character operators and every error still go through the original character-by-character code, which defines the behaviour. `tests/_reference_lexer.py` is a verbatim copy of the previous lexer, and `tests/test_lexer_equivalence.py` requires identical tokens (type, lexeme, value, line, column) or identical exceptions on hand-picked edge cases and 8,000 Hypothesis inputs. In the parser, a literal, `?` or plain identifier followed by `,` or `)` cannot take an operator, so `parse_expression` returns it without walking the eight-level precedence chain; `tests/test_parser_fast_path.py` compares ASTs (placeholder numbering included) and errors against a parser that always walks it. On a 500-row `INSERT` this makes parsing 3.3–3.6x faster and lexing 1.1–1.3x (creating the immutable `Token`/`Position` objects is now most of the lexer's cost).
+
 ### Supported grammar (documented subset)
 
 The subset covers the everyday core of SQL-92/SQL:1999 DDL and DML. In EBNF-ish notation (`[]` optional, `{}` zero-or-more, `|` alternation):
@@ -240,7 +242,7 @@ ruff format --check .
 mypy --strict src/
 ```
 
-155 tests across eight files:
+217 tests across ten files (the counts below are those of the original eight; `test_parser_fast_path.py`, `test_lexer_equivalence.py` and the `ANALYZE`/constraint/join additions account for the rest):
 
 - `test_lexer.py` (43): identifiers, keywords, quoted identifiers with escaping, numeric/string/boolean/null literals, every operator, comments, and line/column tracking across multiple lines.
 - `test_parser_select.py` (34): `SELECT` with `DISTINCT`, aliases, all four `JOIN` kinds, `WHERE`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`/`OFFSET`, aggregate function calls, and the explicitly-excluded-construct battery (derived tables, `UNION`, `WITH`, `CASE`).

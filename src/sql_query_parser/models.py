@@ -399,6 +399,14 @@ class DropTableStatement(Statement):
 
 
 @dataclass(frozen=True, slots=True)
+class AnalyzeStatement(Statement):
+    """`ANALYZE [tabla]`: recalcular las estadísticas del optimizador de
+    una tabla, o de todas si `table` es `None`."""
+
+    table: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CreateIndexStatement(Statement):
     index_name: str
     table: str

@@ -22,6 +22,7 @@ from typing import NoReturn
 from .errors import SqlSyntaxError, UnsupportedFeatureError
 from .lexer import DATA_TYPE_KEYWORDS
 from .models import (
+    AnalyzeStatement,
     Assignment,
     Between,
     BinaryOp,
@@ -341,7 +342,11 @@ class Parser:
             return self._parse_create()
         if self._check_keyword("DROP"):
             return self._parse_drop()
-        self._error("expected a SELECT, INSERT, UPDATE, DELETE, CREATE or DROP statement")
+        if self._match_keyword("ANALYZE") is not None:
+            at_end = self._check_type(TokenType.SEMICOLON) or self._check_type(TokenType.EOF)
+            table = None if at_end else self._expect_identifier()
+            return AnalyzeStatement(table=table)
+        self._error("expected a SELECT, INSERT, UPDATE, DELETE, CREATE, DROP or ANALYZE statement")
 
     def parse_single_statement(self) -> Statement:
         """Parsea exactamente una sentencia, con `;` final opcional, y exige

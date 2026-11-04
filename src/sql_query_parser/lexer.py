@@ -46,6 +46,7 @@ KEYWORDS: frozenset[str] = frozenset(
         "DELETE",
         "CREATE",
         "DROP",
+        "ANALYZE",
         "TABLE",
         "INDEX",
         "UNIQUE",

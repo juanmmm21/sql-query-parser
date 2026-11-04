@@ -55,7 +55,7 @@ The subset covers the everyday core of SQL-92/SQL:1999 DDL and DML. In EBNF-ish 
 
 ```text
 statement       := select_stmt | insert_stmt | update_stmt | delete_stmt
-                  | create_table_stmt | create_index_stmt | drop_table_stmt
+                  | create_table_stmt | create_index_stmt | drop_table_stmt | analyze_stmt
 
 select_stmt     := SELECT [DISTINCT | ALL] select_list
                     FROM table_ref { join }
@@ -90,6 +90,8 @@ column_constraint := NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT expr
 data_type       := type_keyword ['(' integer [',' integer] ')']
 
 drop_table_stmt := DROP TABLE [IF EXISTS] identifier
+
+analyze_stmt    := ANALYZE [identifier]     -- refresh optimizer statistics (one table or all)
 
 create_index_stmt := CREATE [UNIQUE] INDEX [IF NOT EXISTS] identifier
                       ON identifier '(' identifier {',' identifier} ')'

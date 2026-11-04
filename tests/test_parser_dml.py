@@ -1,5 +1,8 @@
 """Tests del parser para `INSERT`, `UPDATE` y `DELETE`."""
 
+import pytest
+
+from sql_query_parser.errors import SqlSyntaxError
 from sql_query_parser.models import (
     BinaryOp,
     BinaryOperator,
@@ -107,6 +110,15 @@ class TestDropTable:
 
         assert parse("DROP TABLE t") == DropTableStatement(table="t")
         assert parse("DROP TABLE IF EXISTS t;") == DropTableStatement(table="t", if_exists=True)
+
+    def test_analyze(self) -> None:
+        from sql_query_parser.models import AnalyzeStatement
+
+        assert parse("ANALYZE") == AnalyzeStatement()
+        assert parse("ANALYZE;") == AnalyzeStatement()
+        assert parse("analyze orders") == AnalyzeStatement(table="orders")
+        with pytest.raises(SqlSyntaxError):
+            parse("ANALYZE 1")
 
     def test_drop_requires_table(self) -> None:
         import pytest

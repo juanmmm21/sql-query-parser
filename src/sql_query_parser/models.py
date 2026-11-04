@@ -280,6 +280,24 @@ class ColumnDefinition:
     default: Expression | None = None
 
 
+class TableConstraintKind(Enum):
+    PRIMARY_KEY = auto()
+    UNIQUE = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class TableConstraint:
+    """Restricción a nivel de tabla de `CREATE TABLE`:
+    `[CONSTRAINT nombre] PRIMARY KEY (a, b)` o `[CONSTRAINT nombre] UNIQUE (a)`.
+    Es la forma que generan los ORMs (SQLAlchemy emite siempre la clave
+    primaria como restricción de tabla). Validar que las columnas existan
+    es trabajo del consumidor, igual que con el resto del DDL."""
+
+    kind: TableConstraintKind
+    columns: tuple[str, ...]
+    name: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Sentencias de nivel superior
 # ---------------------------------------------------------------------------
@@ -368,6 +386,7 @@ class CreateTableStatement(Statement):
     table: str
     columns: tuple[ColumnDefinition, ...]
     if_not_exists: bool = False
+    constraints: tuple[TableConstraint, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

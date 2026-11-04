@@ -51,6 +51,8 @@ from .models import (
     Star,
     Statement,
     Subquery,
+    TableConstraint,
+    TableConstraintKind,
     TableRef,
     Token,
     TokenType,
@@ -577,13 +579,61 @@ class Parser:
         if_not_exists = self._parse_if_not_exists()
         table = self._expect_identifier()
         self._expect_type(TokenType.LPAREN, "'('")
-        columns = [self._parse_column_definition()]
-        while self._match_type(TokenType.COMMA) is not None:
-            columns.append(self._parse_column_definition())
+        columns: list[ColumnDefinition] = []
+        constraints: list[TableConstraint] = []
+        while True:
+            if self._at_table_constraint():
+                constraints.append(self._parse_table_constraint())
+            elif constraints:
+                # SQL estándar: las restricciones de tabla van detrás de todas
+                # las columnas; una columna después de ellas es un error.
+                self._error("expected a table constraint after a table constraint")
+            else:
+                columns.append(self._parse_column_definition())
+            if self._match_type(TokenType.COMMA) is None:
+                break
+        if not columns:
+            self._error("expected at least one column definition")
         self._expect_type(TokenType.RPAREN, "')'")
         return CreateTableStatement(
-            table=table, columns=tuple(columns), if_not_exists=if_not_exists
+            table=table,
+            columns=tuple(columns),
+            if_not_exists=if_not_exists,
+            constraints=tuple(constraints),
         )
+
+    def _at_table_constraint(self) -> bool:
+        """`CONSTRAINT` es contextual (no palabra reservada): una columna
+        puede seguir llamándose `constraint`. Sólo cuenta como inicio de
+        restricción si le sigue un identificador y después PRIMARY/UNIQUE."""
+        if self._check_keyword("PRIMARY", "UNIQUE"):
+            return True
+        token = self._current()
+        if token.type is not TokenType.IDENTIFIER or token.lexeme.upper() != "CONSTRAINT":
+            return False
+        if self._pos + 2 >= len(self._tokens):
+            return False
+        after_name = self._tokens[self._pos + 2]
+        return after_name.type is TokenType.KEYWORD and after_name.lexeme in ("PRIMARY", "UNIQUE")
+
+    def _parse_table_constraint(self) -> TableConstraint:
+        name: str | None = None
+        token = self._current()
+        if token.type is TokenType.IDENTIFIER and token.lexeme.upper() == "CONSTRAINT":
+            self._advance()
+            name = self._expect_identifier()
+        if self._match_keyword("PRIMARY") is not None:
+            self._expect_keyword("KEY")
+            kind = TableConstraintKind.PRIMARY_KEY
+        else:
+            self._expect_keyword("UNIQUE")
+            kind = TableConstraintKind.UNIQUE
+        self._expect_type(TokenType.LPAREN, "'('")
+        names = [self._expect_identifier()]
+        while self._match_type(TokenType.COMMA) is not None:
+            names.append(self._expect_identifier())
+        self._expect_type(TokenType.RPAREN, "')'")
+        return TableConstraint(kind=kind, columns=tuple(names), name=name)
 
     def _parse_column_definition(self) -> ColumnDefinition:
         name = self._expect_identifier()

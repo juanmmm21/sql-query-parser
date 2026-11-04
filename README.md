@@ -81,7 +81,9 @@ assignment      := identifier '=' expr
 delete_stmt     := DELETE FROM identifier [WHERE expr]
 
 create_table_stmt := CREATE TABLE [IF NOT EXISTS] identifier
-                      '(' column_def {',' column_def} ')'
+                      '(' column_def {',' column_def} {',' table_constraint} ')'
+table_constraint := [CONSTRAINT identifier] (PRIMARY KEY | UNIQUE)
+                      '(' identifier {',' identifier} ')'
 column_def      := identifier data_type { column_constraint }
 column_constraint := NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT expr
 data_type       := type_keyword ['(' integer [',' integer] ')']
@@ -116,6 +118,7 @@ Notes worth calling out explicitly:
 - **Comparisons do not chain.** `comparison` appears exactly once per `not_expr`, never in a loop — `a = b = c` is a syntax error, matching standard SQL (there is no boolean-of-comparisons coercion).
 - **Identifiers** may be unquoted (`[A-Za-z_][A-Za-z0-9_]*`, case-insensitive for keyword matching, case *preserved* in the AST) or double-quoted with `""` as the escape for an embedded `"` (`"a""b"` → `a"b`), letting a quoted identifier collide textually with a reserved word.
 - **Comments**: `-- line comments` and `/* block comments */` (non-nesting) are recognized by the lexer and never reach the parser.
+- **Table-level constraints** (`PRIMARY KEY (a, b)`, `UNIQUE (c)`, optionally named with a contextual `CONSTRAINT name` prefix) are parsed into `CreateTableStatement.constraints` (`TableConstraint` nodes). They must follow every column definition, as in standard SQL — this is the form ORMs such as SQLAlchemy emit for primary keys. `CONSTRAINT` is not a reserved word: a column may still be named `constraint`.
 - **`INSERT` without an explicit column list** (`INSERT INTO t VALUES (...)`) is supported; `InsertStatement.columns` is an empty tuple in that case, meaning "all columns, in table-definition order" — resolving that order is `nanosql`'s job, not this parser's.
 - **Subqueries are expressions, not table sources.** `(SELECT ...)` as a primary expression produces a `Subquery` node (a scalar subquery), and `x [NOT] IN (SELECT ...)` produces a dedicated `InSubquery` node — deliberately distinct from `InList`, because `x IN ((SELECT ...))` (a one-element list whose element is a *scalar* subquery, at most one row) does not mean the same thing as `x IN (SELECT ...)` (membership in a result of any size). The parser imposes no semantic restrictions on subqueries: single-column projection, single-row scalar results and the no-correlation rule are all checked by the consumer (`nanosql`), which is the first layer with catalog access. Subqueries share the parser instance with their outer statement, so `?` placeholders inside them continue the outer statement's per-statement numbering.
 

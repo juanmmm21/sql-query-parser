@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sql-query-parser"
-version = "0.1.0"
+version = "0.2.0"
 description = "A hand-written SQL lexer and parser producing a typed AST for a documented SQL subset."
 readme = "README.md"
 requires-python = ">=3.11"
